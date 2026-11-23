@@ -23,13 +23,14 @@ Config :: struct {
 }
 
 Config_JSON :: struct {
-    type:        string,
-    lengths:     []int,
-    delay:       int,
-    cutoff:      f64,
-    peak_gain:   f64,
-    fc:          f64,
-    q:           f64,
+    is_primary_delay_bank: bool,
+    type:      string,
+    lengths:   []int,
+    delay:     int,
+    cutoff:    f64,
+    peak_gain: f64,
+    fc:        f64,
+    q:         f64,
 }
 
 Reverb_Config_JSON :: struct {
@@ -40,10 +41,11 @@ Reverb_Config_JSON :: struct {
 }
 
 Reverb_Config :: struct {
-    fs:          f64,
-    rt60:        f64,
-    channels:    int,
-    components:  []Config,
+    fs:         f64,
+    rt60:       f64,
+    channels:   int,
+    components: []Config,
+    primary_delay_bank_index: int,
 }
 
 config_type_from_string :: proc(name: string) -> (kind: Component_Type, ok: bool) {
@@ -102,12 +104,24 @@ load_config :: proc(path: string, allocator := context.allocator) -> (config: Re
     config.rt60 = raw.rt60
     config.channels = raw.channels
     config.components = make([]Config, len(raw.components), allocator)
+    config.primary_delay_bank_index = -1
 
     for source, i in raw.components {
         kind, type_ok := config_type_from_string(source.type)
         if !type_ok {
             fmt.eprintfln("Config error: components[%d] has unknown type '%s'", i, source.type)
             return
+        }
+
+        if source.is_primary_delay_bank {
+            if config.primary_delay_bank_index != -1 {
+                fmt.eprintfln(
+                    "Config error: components [%d] and [%d] set as primary delay bank '%s'",
+                    config.primary_delay_bank_index, i
+                )
+                return
+            }
+            config.primary_delay_bank_index = i
         }
 
         config.components[i] = Config{
@@ -119,6 +133,11 @@ load_config :: proc(path: string, allocator := context.allocator) -> (config: Re
             fc        = source.fc,
             Q         = source.q,
         }
+    }
+
+    if config.primary_delay_bank_index == -1 {
+        fmt.eprintln("Config error: no primary delay bank is set by the config")
+        return
     }
 
     return config, true

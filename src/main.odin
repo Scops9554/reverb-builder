@@ -66,13 +66,11 @@ Householder :: struct {
     scale:        f64,
 }
 
-make_components :: proc(config: Reverb_Config, allocator := context.allocator) -> (comps: [dynamic]^Component, index: int) {
-    index = -1
+make_components :: proc(config: Reverb_Config, allocator := context.allocator) -> (comps: [dynamic]^Component) {
     total_len := make([]int, config.channels, context.allocator)
     defer delete(total_len)
     for c, i in config.components {
         if c.type != .Delay_Bank do continue
-        if index == -1 do index = i
         for len, i in c.lengths {
             total_len[i] += len
         }
@@ -175,7 +173,7 @@ make_components :: proc(config: Reverb_Config, allocator := context.allocator) -
         }
     }
 
-    return comps, index
+    return comps
 }
 
 process :: proc(component: ^Component, input, scratch: []f64) {
@@ -256,7 +254,8 @@ main :: proc() {
     defer vmem.arena_destroy(&arena)
 
     fmt.println(config)
-    components, index := make_components(config, arena_allocator)
+    components := make_components(config, arena_allocator)
+    index := config.primary_delay_bank_index
 
     // free the files for the config since they arent needed anymore
     free_all(context.temp_allocator)
