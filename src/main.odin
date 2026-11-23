@@ -308,3 +308,5 @@ main :: proc() {
 
     write_wav(fmt.tprintf("output sounds/%s.wav", os.args[1]), out, u32(config.fs))
 }
+
+// please work
