@@ -13,32 +13,15 @@ Config :: struct {
     // for delay
     delay: f64,
 
-    // for low and high pass filters
-    cutoff: f64,
+    // for one-pole filters
+    op_type: One_Pole_Type,
+    cutoff:  f64,
 
     // for the biquad filters
-    peak_gain: f64,
-    fc:        f64,
-    Q:         f64,
-}
-
-Config_JSON :: struct {
-    type:      string,
-    lengths:   []int,
-    delay:     f64,
-    cutoff:    f64,
+    bq_type:   Biquad_Type,
     peak_gain: f64,
     fc:        f64,
     q:         f64,
-}
-
-Reverb_Config_JSON :: struct {
-    fs:          f64,
-    rt60:        f64,
-    channels:    int,
-    pre_feedback_network:  []Config_JSON,
-    feedback_network:      []Config_JSON,
-    post_feedback_network: []Config_JSON,
 }
 
 Reverb_Config :: struct {
@@ -50,27 +33,6 @@ Reverb_Config :: struct {
     post_feedback_network: []Config,
 }
 
-config_type_from_string :: proc(name: string) -> (kind: Component_Type, ok: bool) {
-    switch name {
-    case "Delay":
-        return .Delay, true
-    case "Delay_Bank":
-        return .Delay_Bank, true
-    case "Scalar_Gain":
-        return .Scalar_Gain, true
-    case "Low_Pass_Filter_Bank":
-        return .Low_Pass_Bank, true
-    case "High_Pass_Filter_Bank":
-        return .High_Pass_Bank, true
-    case "Biquad_Bank":
-        return .Biquad_Bank, true
-    case "Householder":
-        return .Householder, true
-    }
-
-    return .Delay, false
-}
-
 load_config :: proc(path: string, allocator := context.allocator) -> (config: Reverb_Config, ok: bool) {
     data, read_err := os.read_entire_file(path, allocator)
     if read_err != nil {
@@ -78,71 +40,28 @@ load_config :: proc(path: string, allocator := context.allocator) -> (config: Re
         return
     }
 
-    raw: Reverb_Config_JSON
-    unmarshal_err := json.unmarshal(data, &raw, .JSON, allocator, {.Disallow_Unknown_Fields})
-
+    unmarshal_err := json.unmarshal(data, &config, .JSON, allocator, {.Disallow_Unknown_Fields})
     if unmarshal_err != nil {
         fmt.eprintfln("Could not parse config '%s': %v", path, unmarshal_err)
         return
     }
 
-    if raw.channels <= 0 {
+    if config.channels <= 0 {
         fmt.eprintln("Config error: 'channels' must be greater than zero")
         return
-    } else if raw.channels & (raw.channels - 1) != 0 {
+    } else if config.channels & (config.channels - 1) != 0 {
         fmt.eprintln("Config error: 'channels' must be a power of 2")
         return
     }
-    if raw.rt60 <= 0 {
+    if config.rt60 <= 0 {
         fmt.eprintln("Config error: 'rt60' must be greater than zero")
         return
     }
-    if len(raw.feedback_network) == 0 {
+    if len(config.feedback_network) == 0 {
         fmt.eprintln("Config error: 'components' must not be empty")
         return
     }
-
-    config = {
-        fs = raw.fs,
-        rt60 = raw.rt60,
-        channels = raw.channels,
-        pre_feedback_network = make([]Config, len(raw.pre_feedback_network), allocator),
-        feedback_network = make([]Config, len(raw.feedback_network), allocator),
-        post_feedback_network = make([]Config, len(raw.post_feedback_network), allocator),
-    }
-
-    for source, i in raw.pre_feedback_network {
-        transfer_config(&config.pre_feedback_network[i], source) or_return
-    }
-
-    for source, i in raw.feedback_network {
-        transfer_config(&config.feedback_network[i], source) or_return
-    }
-
-    for source, i in raw.post_feedback_network {
-        transfer_config(&config.post_feedback_network[i], source) or_return
-    }
-
     return config, true
-}
-
-@(require_results)
-transfer_config :: proc(config: ^Config, source: Config_JSON) -> (ok: bool) {
-    kind, type_ok := config_type_from_string(source.type)
-    if !type_ok {
-        fmt.eprintfln("'%s' is not a valid component component type")
-        return
-    }
-    config^ = Config {
-        type      = kind,
-        lengths   = source.lengths,
-        delay     = source.delay,
-        cutoff    = source.cutoff,
-        peak_gain = source.peak_gain,
-        fc        = source.fc,
-        Q         = source.q,
-    }
-    return true
 }
 
 validate_reverb_config :: proc(config: Reverb_Config) -> (ok := true) {
@@ -186,7 +105,7 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: b
                 return false
             }
 
-        case .Low_Pass_Bank, .High_Pass_Bank:
+        case .One_Pole_Filter:
             if component.cutoff <= 0 || component.cutoff >= config.fs * 0.5 {
                 fmt.eprintfln(
                     "Config error: components[%d] cutoff must be between 0 and Nyquist (%g Hz)",
@@ -195,7 +114,7 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: b
                 return false
             }
 
-        case .Biquad_Bank:
+        case .Biquad_Filter:
             if component.fc <= 0 || component.fc >= config.fs * 0.5 {
                 fmt.eprintfln(
                     "Config error: components[%d] fc must be between 0 and Nyquist (%g Hz)",
@@ -203,7 +122,7 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: b
                 )
                 return false
             }
-            if component.Q <= 0 {
+            if component.q <= 0 {
                 fmt.eprintfln("Config error: components[%d] Q must be greater than zero", i)
                 return false
             }
@@ -212,7 +131,10 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: b
                 return false
             }
 
-        case .Scalar_Gain, .Householder:
+        case 
+            .Scalar_Gain,
+            .Householder,
+            .Hadamard:
             // nothing
         }
     }

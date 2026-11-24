@@ -14,44 +14,47 @@
             ]
         },
         {
-            "type": "Householder"
+            "type": "Hadamard"
         },
         {
             "type": "Delay_Bank",
             "lengths": [
-                7, 13, 19, 31, 41, 53, 53, 67,
-                73, 83, 89, 97, 107, 113, 131, 137,
+                7,   13,  19,  31,  41,  53,  53,  67,
+                73,  83,  89,  97,  107, 113, 131, 137,
                 149, 163, 167, 173, 181, 191, 199, 211,
                 223, 227, 239, 241, 251, 263, 269, 277
             ]
         },
         {
-            "type": "Householder"
+            "type": "Hadamard"
         },
         {
             "type": "Delay_Bank",
             "lengths": [
-                3, 17, 23, 31, 43, 53, 61, 67,
-                73, 83, 89, 97, 107, 113, 131, 137,
+                3,   17,  23,  31,  43,  53,  61,  67,
+                73,  83,  89,  97,  107, 113, 131, 137,
                 149, 151, 163, 173, 179, 193, 199, 211,
                 223, 229, 239, 251, 257, 269, 269, 271
             ]
         },
         {
-            "type": "Householder"
+            "type": "Hadamard"
         },
         {
-            "type": "Low_Pass_Filter_Bank",
+            "type": "One_Pole_Filter",
+            "op_type": "Low_Pass",
             "cutoff": 6850
         },
         {
-            "type": "Biquad_Bank",
+            "type": "Biquad_Filter",
+            "bq_type": "Peaking",
             "fc": 800,
             "peak_gain": -5.1,
             "q": 0.15
         },
         {
-            "type": "High_Pass_Filter_Bank",
+            "type": "One_Pole_Filter",
+            "op_type": "High_Pass",
             "cutoff": 135
         },
         {

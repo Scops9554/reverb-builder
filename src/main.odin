@@ -5,16 +5,17 @@ import "core:fmt"
 import "core:math"
 import "core:mem"
 import "core:slice"
+import "core:time"
 import vmem "core:mem/virtual"
 
 Component_Type :: enum u8 {
     Delay,
     Delay_Bank,
     Scalar_Gain,
-    Low_Pass_Bank,
-    High_Pass_Bank,
-    Biquad_Bank,
+    One_Pole_Filter,
+    Biquad_Filter,
     Householder,
+    Hadamard,
 }
 
 Component :: struct {
@@ -46,24 +47,28 @@ Delay :: struct {
     delay_line:   Delay_Line,
 }
 
-Low_Pass_Filter :: struct{
-    store, damp1, damp2: f64,
+One_Pole_Filter :: struct {
+    kind: One_Pole_Type,
+    x0, x1, x2: f64,
+}
+One_Pole_Type :: enum {
+    High_Pass,
+    Low_Pass,
 }
 
-High_Pass_Filter :: struct {
-    y_prev: f64,
-    x_prev: f64,
-    alpha:  f64,
-}
-
+// thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
 Biquad :: struct {
     a0, a1, a2, a3, a4: f64,
     x1, x2, y1, y2:     f64,
 }
+Biquad_Type :: enum {
+    Low_Pass,  /* low pass filter */
+    High_Pass, /* High pass filter */
+    Peaking,   /* Peaking band EQ filter */
+}
 
-Householder :: struct {
+Matrix :: struct {
     using header: Component,
-    scale:        f64,
 }
 
 make_components :: proc(config: Reverb_Config, list: []Config, allocator := context.allocator) -> (comps: [dynamic]^Component) {
@@ -109,45 +114,59 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
             scalar_gain.type = .Scalar_Gain
             append(&comps, scalar_gain)
 
-        case .Low_Pass_Bank:
-            bank := new(Bank(Low_Pass_Filter), allocator)
-            bank.type = .Low_Pass_Bank
+        case .One_Pole_Filter:
+            bank := new(Bank(One_Pole_Filter), allocator)
+            bank.type = .One_Pole_Filter
+            bank.filters = make([]One_Pole_Filter, config.channels, allocator)
 
-            damping := math.exp(-2.0 * math.PI * component.cutoff / config.fs)
-            bank.filters = make([]Low_Pass_Filter, config.channels, allocator)
-            slice.fill(bank.filters, Low_Pass_Filter{0, damping, 1 - damping})
-
+            switch component.op_type {
+            case .Low_Pass:
+                damping := math.exp(-2.0 * math.PI * component.cutoff / config.fs)
+                slice.fill(bank.filters, {.Low_Pass, 0, damping, 1 - damping})
+            case .High_Pass:
+                alpha := 1 / (1 + (2 * math.PI * component.cutoff) / config.fs)
+                slice.fill(bank.filters, {.High_Pass, 0, 0, alpha})
+            }
             append(&comps, bank)
 
-        case .High_Pass_Bank:
-            bank := new(Bank(High_Pass_Filter), allocator)
-            bank.type = .High_Pass_Bank
-
-            bank.filters = make([]High_Pass_Filter, config.channels, allocator)
-            alpha := 1 / (1 + (2 * math.PI * component.cutoff) / config.fs)
-            slice.fill(bank.filters, High_Pass_Filter{alpha=alpha})
-
-            append(&comps, bank)
-
-        case .Biquad_Bank:
+        case .Biquad_Filter:
             bank := new(Bank(Biquad), allocator)
-            bank.type = .Biquad_Bank
+            bank.type = .Biquad_Filter
 
+            // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
             A := math.pow(10, component.peak_gain / 40)
             omega := 2.0 * math.PI * component.fc / config.fs
             sn := math.sin(omega)
             cs := math.cos(omega)
-            alpha := sn * math.sinh(math.LN2 / 2 * component.Q * omega / sn)
+            alpha := sn * math.sinh(math.LN2 / 2 * component.q * omega / sn)
 
-            b0 := 1.0 + (alpha * A)
-            b1 := -2.0 * cs
-            b2 := 1.0 - (alpha * A)
+            b0, b1, b2: f64
+            a0, a1, a2: f64
 
-            a0 := 1.0 + (alpha / A)
-            a1 := -2.0 * cs
-            a2 := 1.0 - (alpha / A)
+            #partial switch component.bq_type {
+            case .Low_Pass:
+                b0 = (1 - cs) /2
+                b1 = 1 - cs
+                b2 = (1 - cs) /2
+                a0 = 1 + alpha
+                a1 = -2 * cs
+                a2 = 1 - alpha
+            case .High_Pass:
+                b0 = (1 + cs) /2
+                b1 = -(1 + cs)
+                b2 = (1 + cs) /2
+                a0 = 1 + alpha
+                a1 = -2 * cs
+                a2 = 1 - alpha
+            case .Peaking:
+                b0 = 1 + (alpha * A)
+                b1 = -2 * cs
+                b2 = 1 - (alpha * A)
+                a0 = 1 + (alpha /A)
+                a1 = -2 * cs
+                a2 = 1 - (alpha /A)
+            }
 
-            bank.filters = make([]Biquad, config.channels, allocator)
             slice.fill(bank.filters, Biquad{
                 a0 = b0 / a0,
                 a1 = b1 / a0,
@@ -159,10 +178,14 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
             append(&comps, bank)
 
         case .Householder:
-            householder := new(Householder, allocator)
-            householder.scale = -2 / f64(config.channels)
+            householder := new(Matrix, allocator)
             householder.type = .Householder
             append(&comps, householder)
+
+        case .Hadamard:
+            hadamard := new(Matrix, allocator)
+            hadamard.type = .Hadamard
+            append(&comps, hadamard)
         }
     }
 
@@ -192,20 +215,24 @@ process :: proc(component: ^Component, input, scratch: []f64) {
         gains := cast(^Bank(f64))component
         for g, i in gains.filters do input[i] *= g
 
-    case .Low_Pass_Bank:
-        bank := cast(^Bank(Low_Pass_Filter))component
-        for &filter, i in bank.filters {
-            filter.store = (input[i] * filter.damp2) + (filter.store * filter.damp1)
-            input[i] = filter.store
+    case .One_Pole_Filter:
+        bank := cast(^Bank(One_Pole_Filter))component
+        switch bank.filters[0].kind {
+        case .Low_Pass:
+            for &filter, i in bank.filters {
+                filter.x0 = (input[i] * filter.x2) + (filter.x0 * filter.x1)
+                input[i] = filter.x0
+            }
+        case .High_Pass:
+            for &filter, i in bank.filters {
+                filter.x0 = filter.x2 * (filter.x0 + input[i] - filter.x1)
+                filter.x1 = input[i]
+                input[i] = filter.x0
+            }
         }
-    case .High_Pass_Bank:
-        bank := cast(^Bank(High_Pass_Filter))component
-        for &filter, i in bank.filters {
-            filter.y_prev = filter.alpha * (filter.y_prev + input[i] - filter.x_prev)
-            filter.x_prev = input[i]
-            input[i] = filter.y_prev
-        }
-    case .Biquad_Bank:
+
+    // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
+    case .Biquad_Filter:
         bank := cast(^Bank(Biquad))component
         for &b, i in bank.filters {
             result :=
@@ -223,15 +250,27 @@ process :: proc(component: ^Component, input, scratch: []f64) {
 
             input[i] = result
         }
+
     case .Householder:
-        matr := cast(^Householder)component
+        matr := cast(^Matrix)component
         sum: f64 = 0
         for i in 0 ..< len(input) {
             sum += input[i]
         }
-        sum *= f64(matr.scale)
+        sum *= -2 / f64(len(input))
         for i in 0 ..< len(input) {
             input[i] += sum
+        }
+
+    case .Hadamard:
+        n := len(input)
+        for h := 1; h < n; h *= 2 {
+            for s := 0; s < n; s += h * 2 {
+                for j := 0; j < s; j += s + h {
+                    u, v := input[j], input[j + h]
+                    input[j], input[j + h] = u + v, u - v
+                }
+            }
         }
     }
 }
@@ -326,23 +365,26 @@ main :: proc() {
                 for dline in bank.filters {
                     slice.zero(dline.buf)
                 }
-            case .Low_Pass_Bank:
-                bank := cast(^Bank(Low_Pass_Filter))component
-                for &filter in bank.filters {
-                    filter.store = 0
+            case .One_Pole_Filter:
+                bank := cast(^Bank(One_Pole_Filter))component
+                switch bank.filters[0].kind {
+                case .Low_Pass:
+                    for &filter in bank.filters {
+                        filter.x0 = 0
+                    }
+                case .High_Pass:
+                    for &filter in bank.filters {
+                        filter.x0, filter.x1 = 0, 0
+                    }
                 }
-            case .High_Pass_Bank:
-                bank := cast(^Bank(High_Pass_Filter))component
-                for &filter in bank.filters {
-                    filter.x_prev = 0
-                    filter.y_prev = 0
-                }
-            case .Biquad_Bank:
+            case .Biquad_Filter:
                 bank := cast(^Bank(Biquad))component
                 for &b in bank.filters {
                     b.x1, b.x2, b.y1, b.y2 = 0, 0, 0, 0
                 }
-            case .Householder, .Scalar_Gain:
+            case .Householder,
+                .Hadamard,
+                .Scalar_Gain:
                 // nothing
             }
         }
