@@ -64,24 +64,25 @@ load_config :: proc(path: string, allocator := context.allocator) -> (config: Re
     return config, true
 }
 
-validate_reverb_config :: proc(config: Reverb_Config) -> (ok := true) {
+validate_reverb_config :: proc(config: Reverb_Config) -> (ok: bool) {
+    n_errs := 0
     if config.fs <= 0 {
         fmt.eprintln("Config error: sample rate must be greater than zero")
-        ok = false
+        n_errs += 1
     }
     if config.feedback_network[0].type != .Delay_Bank {
         fmt.eprintln("Config error: the first component of the feedback network has to be a Delay_Bank")
-        ok = false
+        n_errs += 1
     }
 
-    ok &= validate_component_list(config, config.pre_feedback_network)
-    ok &= validate_component_list(config, config.feedback_network)
-    ok &= validate_component_list(config, config.post_feedback_network)
+    n_errs += validate_component_list(config, config.pre_feedback_network)
+    n_errs += validate_component_list(config, config.feedback_network)
+    n_errs += validate_component_list(config, config.post_feedback_network)
 
-    return ok
+    return n_errs == 0
 }
 
-validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: bool) {
+validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (n_errs: int) {
     for component, i in list {
         switch component.type {
         case .Delay_Bank:
@@ -90,19 +91,19 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: b
                     "Config error: components[%d] has %d delay lengths; expected %d (one per channel)",
                     i, len(component.lengths), config.channels,
                 )
-                return false
+                n_errs += 1
             }
             for length in component.lengths {
                 if length <= 0 {
                     fmt.eprintfln("Config error: components[%d] has a non-positive delay length", i)
-                    return false
+                    n_errs += 1
                 }
             }
 
         case .Delay:
             if component.delay <= 0 {
                 fmt.eprintfln("Config error: components[%d] 'delay' must be greater than zero", i)
-                return false
+                n_errs += 1
             }
 
         case .One_Pole_Filter:
@@ -111,7 +112,7 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: b
                     "Config error: components[%d] cutoff must be between 0 and Nyquist (%g Hz)",
                     i, 22050,
                 )
-                return false
+                n_errs += 1
             }
 
         case .Biquad_Filter:
@@ -120,15 +121,15 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: b
                     "Config error: components[%d] fc must be between 0 and Nyquist (%g Hz)",
                     i, config.fs * 0.5,
                 )
-                return false
+                n_errs += 1
             }
             if component.q <= 0 {
                 fmt.eprintfln("Config error: components[%d] Q must be greater than zero", i)
-                return false
+                n_errs += 1
             }
             if component.peak_gain == 0 {
                 fmt.eprintfln("Config error: components[%d] peak_gain_rt60 must not be zero", i)
-                return false
+                n_errs += 1
             }
 
         case 
@@ -138,5 +139,5 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: b
             // nothing
         }
     }
-    return true
+    return n_errs
 }
