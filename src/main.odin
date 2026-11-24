@@ -11,8 +11,8 @@ Component_Type :: enum u8 {
     Delay,
     Delay_Bank,
     Scalar_Gain,
-    Low_Pass_Filter_Bank,
-    High_Pass_Filter_Bank,
+    Low_Pass_Bank,
+    High_Pass_Bank,
     Biquad_Bank,
     Householder,
 }
@@ -109,9 +109,9 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
             scalar_gain.type = .Scalar_Gain
             append(&comps, scalar_gain)
 
-        case .Low_Pass_Filter_Bank:
+        case .Low_Pass_Bank:
             bank := new(Bank(Low_Pass_Filter), allocator)
-            bank.type = .Low_Pass_Filter_Bank
+            bank.type = .Low_Pass_Bank
 
             damping := math.exp(-2.0 * math.PI * component.cutoff / config.fs)
             bank.filters = make([]Low_Pass_Filter, config.channels, allocator)
@@ -119,9 +119,9 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
 
             append(&comps, bank)
 
-        case .High_Pass_Filter_Bank:
+        case .High_Pass_Bank:
             bank := new(Bank(High_Pass_Filter), allocator)
-            bank.type = .High_Pass_Filter_Bank
+            bank.type = .High_Pass_Bank
 
             bank.filters = make([]High_Pass_Filter, config.channels, allocator)
             alpha := 1 / (1 + (2 * math.PI * component.cutoff) / config.fs)
@@ -192,13 +192,13 @@ process :: proc(component: ^Component, input, scratch: []f64) {
         gains := cast(^Bank(f64))component
         for g, i in gains.filters do input[i] *= g
 
-    case .Low_Pass_Filter_Bank:
+    case .Low_Pass_Bank:
         bank := cast(^Bank(Low_Pass_Filter))component
         for &filter, i in bank.filters {
             filter.store = (input[i] * filter.damp2) + (filter.store * filter.damp1)
             input[i] = filter.store
         }
-    case .High_Pass_Filter_Bank:
+    case .High_Pass_Bank:
         bank := cast(^Bank(High_Pass_Filter))component
         for &filter, i in bank.filters {
             filter.y_prev = filter.alpha * (filter.y_prev + input[i] - filter.x_prev)
@@ -237,8 +237,23 @@ process :: proc(component: ^Component, input, scratch: []f64) {
 }
 
 main :: proc() {
-    config, ok := load_config("config.json", context.temp_allocator)
+    if os.args[1] == "-h" || os.args[1] == "--help" {
+        fmt.eprintln("Usage: ./reverb-builder <config name> [audio file names]")
+        return
+    }
+
+    config_filepath := fmt.tprintf("configs/%s.json", os.args[1])
+    config, ok := load_config(config_filepath, context.temp_allocator)
     if !ok || !validate_reverb_config(config) do return
+
+    output_directory := fmt.tprintf("output sounds/%s", os.args[1])
+    if !os.is_directory(output_directory) {
+        err := os.make_directory_all(output_directory)
+        if err != nil {
+            fmt.eprintln("Unable to create directory %s: %s", output_directory, err)
+            return
+        }
+    }
 
     arena := vmem.Arena{}
     err := vmem.arena_init_growing(&arena)
@@ -259,7 +274,7 @@ main :: proc() {
     assert(feedback_network[0].type == .Delay_Bank)
     main_bank := cast(^Bank(Delay_Line))feedback_network[0]
 
-    for filename in os.args[1:] {
+    for filename in os.args[2:] {
         relative_path := fmt.tprintf("input sounds/%s.wav", filename)
         audio := read_wav(relative_path, u32(config.fs), context.temp_allocator) or_continue
         out := make([]f32, len(audio), context.temp_allocator)
@@ -297,8 +312,9 @@ main :: proc() {
             out[i] = sum / f32(config.channels)
         }
 
-        write_wav(fmt.tprintf("output sounds/%s.wav", filename), out, u32(config.fs)) or_continue
-        fmt.println("wrote to 'output sound/%s.wav'", filename)
+        output_filepath := fmt.tprintf("output sounds/%s/%s.wav", os.args[1], filename)
+        write_wav(output_filepath, out, u32(config.fs)) or_continue
+        fmt.printfln("wrote to 'output sound/%s/%s.wav'", os.args[1], filename)
 
         for component in feedback_network {
             switch component.type {
@@ -310,12 +326,12 @@ main :: proc() {
                 for dline in bank.filters {
                     slice.zero(dline.buf)
                 }
-            case .Low_Pass_Filter_Bank:
+            case .Low_Pass_Bank:
                 bank := cast(^Bank(Low_Pass_Filter))component
                 for &filter in bank.filters {
                     filter.store = 0
                 }
-            case .High_Pass_Filter_Bank:
+            case .High_Pass_Bank:
                 bank := cast(^Bank(High_Pass_Filter))component
                 for &filter in bank.filters {
                     filter.x_prev = 0

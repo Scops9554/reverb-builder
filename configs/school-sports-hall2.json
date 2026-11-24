@@ -1,0 +1,71 @@
+{
+    "fs": 44100,
+    "rt60": 4.5,
+    "channels": 32,
+    "pre_feedback_network": [],
+    "feedback_network": [
+        {
+            "type": "Delay_Bank",
+            "lengths": [
+                1913, 1973, 2021, 2069, 2119, 2179, 2213, 2273,
+                2347, 2357, 2423, 2473, 2531, 2551, 2647, 2663,
+                2749, 2777, 2833, 2887, 2917, 2971, 3041, 3067,
+                3121, 3169, 3209, 3299, 3331, 3359, 3413, 3491
+            ]
+        },
+        {
+            "type": "Householder"
+        },
+        {
+            "type": "Delay_Bank",
+            "lengths": [
+                7, 13, 19, 31, 41, 53, 53, 67,
+                73, 83, 89, 97, 107, 113, 131, 137,
+                149, 163, 167, 173, 181, 191, 199, 211,
+                223, 227, 239, 241, 251, 263, 269, 277
+            ]
+        },
+        {
+            "type": "Householder"
+        },
+        {
+            "type": "Delay_Bank",
+            "lengths": [
+                3, 17, 23, 31, 43, 53, 61, 67,
+                73, 83, 89, 97, 107, 113, 131, 137,
+                149, 151, 163, 173, 179, 193, 199, 211,
+                223, 229, 239, 251, 257, 269, 269, 271
+            ]
+        },
+        {
+            "type": "Householder"
+        },
+        {
+            "type": "Low_Pass_Filter_Bank",
+            "cutoff": 6850
+        },
+        {
+            "type": "Biquad_Bank",
+            "fc": 800,
+            "peak_gain": -5.1,
+            "q": 0.15
+        },
+        {
+            "type": "High_Pass_Filter_Bank",
+            "cutoff": 135
+        },
+        {
+            "type": "Scalar_Gain"
+        }
+    ],
+    "post_feedback_network": [
+        {
+            "type": "High_Pass_Filter_Bank",
+            "cutoff": 500
+        },
+        {
+            "type": "Delay",
+            "delay": 0.16
+        }
+    ]
+}

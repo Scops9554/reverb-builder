@@ -14,6 +14,9 @@
             ]
         },
         {
+            "type": "Householder"
+        },
+        {
             "type": "Delay_Bank",
             "lengths": [
                 7, 13, 19, 31, 41, 53, 53, 67,
@@ -21,6 +24,9 @@
                 149, 163, 167, 173, 181, 191, 199, 211,
                 223, 227, 239, 241, 251, 263, 269, 277
             ]
+        },
+        {
+            "type": "Householder"
         },
         {
             "type": "Delay_Bank",
@@ -33,12 +39,6 @@
         },
         {
             "type": "Householder"
-        },
-        {
-            "type": "Biquad_Bank",
-            "fc": 60,
-            "peak_gain": 2,
-            "q": 0.5
         },
         {
             "type": "Low_Pass_Filter_Bank",

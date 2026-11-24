@@ -59,9 +59,9 @@ config_type_from_string :: proc(name: string) -> (kind: Component_Type, ok: bool
     case "Scalar_Gain":
         return .Scalar_Gain, true
     case "Low_Pass_Filter_Bank":
-        return .Low_Pass_Filter_Bank, true
+        return .Low_Pass_Bank, true
     case "High_Pass_Filter_Bank":
-        return .High_Pass_Filter_Bank, true
+        return .High_Pass_Bank, true
     case "Biquad_Bank":
         return .Biquad_Bank, true
     case "Householder":
@@ -102,12 +102,14 @@ load_config :: proc(path: string, allocator := context.allocator) -> (config: Re
         return
     }
 
-    config.fs = raw.fs
-    config.rt60 = raw.rt60
-    config.channels = raw.channels
-    config.pre_feedback_network = make([]Config, len(raw.pre_feedback_network), allocator)
-    config.feedback_network = make([]Config, len(raw.feedback_network), allocator)
-    config.post_feedback_network = make([]Config, len(raw.post_feedback_network), allocator)
+    config = {
+        fs = raw.fs,
+        rt60 = raw.rt60,
+        channels = raw.channels,
+        pre_feedback_network = make([]Config, len(raw.pre_feedback_network), allocator),
+        feedback_network = make([]Config, len(raw.feedback_network), allocator),
+        post_feedback_network = make([]Config, len(raw.post_feedback_network), allocator),
+    }
 
     for source, i in raw.pre_feedback_network {
         transfer_config(&config.pre_feedback_network[i], source) or_return
@@ -128,10 +130,10 @@ load_config :: proc(path: string, allocator := context.allocator) -> (config: Re
 transfer_config :: proc(config: ^Config, source: Config_JSON) -> (ok: bool) {
     kind, type_ok := config_type_from_string(source.type)
     if !type_ok {
-        fmt.eprintfln("later") // TODO: add an actual error message
+        fmt.eprintfln("'%s' is not a valid component component type")
         return
     }
-    config^ = Config{
+    config^ = Config {
         type      = kind,
         lengths   = source.lengths,
         delay     = source.delay,
@@ -184,11 +186,11 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: b
                 return false
             }
 
-        case .Low_Pass_Filter_Bank, .High_Pass_Filter_Bank:
+        case .Low_Pass_Bank, .High_Pass_Bank:
             if component.cutoff <= 0 || component.cutoff >= config.fs * 0.5 {
                 fmt.eprintfln(
                     "Config error: components[%d] cutoff must be between 0 and Nyquist (%g Hz)",
-                    i, config.fs * 0.5,
+                    i, 22050,
                 )
                 return false
             }
