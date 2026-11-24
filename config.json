@@ -2,7 +2,8 @@
     "fs": 44100,
     "rt60": 4.5,
     "channels": 32,
-    "components": [
+    "pre_feedback_network": [],
+    "feedback_network": [
         {
             "type": "Delay_Bank",
             "lengths": [
@@ -46,7 +47,7 @@
         {
             "type": "Biquad_Bank",
             "fc": 800,
-            "peak_gain": -3.1,
+            "peak_gain": -5.1,
             "q": 0.15
         },
         {
@@ -55,6 +56,12 @@
         },
         {
             "type": "Scalar_Gain"
+        }
+    ],
+    "post_feedback_network": [
+        {
+            "type": "Delay",
+            "delay": 0.16
         }
     ]
 }

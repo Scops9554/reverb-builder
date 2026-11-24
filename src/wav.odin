@@ -1,18 +1,11 @@
 package src
 
+import "core:fmt"
 import "core:strings"
 import ma "vendor:miniaudio"
 
-/*
- * documentation that I used while writing these utilities:
- *  - the official manual for the miniaudio C library:
- *    https://miniaud.io/docs/manual/index.html#DataSources
- *
- *  - the Odin programming language documentation for the bindings to the C code for miniaudio
- *    https://pkg.odin-lang.org/vendor/miniaudio/#decoder_read_pcm_frames
-*/
-
-read_wav :: proc(path: string, fs: u32, buffer_allocator := context.allocator) -> []f32 {
+@(require_results)
+read_wav :: proc(path: string, fs: u32, buffer_allocator := context.allocator) -> (audio: []f32, ok: bool) {
 	cpath := strings.clone_to_cstring(path)
     defer delete(cpath)
 
@@ -21,7 +14,8 @@ read_wav :: proc(path: string, fs: u32, buffer_allocator := context.allocator) -
 	init_decoder := ma.decoder_init_file(cpath, &config, &decoder)
 
 	if init_decoder != .SUCCESS {
-		panic("failed to open file")
+		fmt.eprintln("Error openning input file '%s'", path)
+        return nil, false
 	}
 
 	defer ma.decoder_uninit(&decoder)
@@ -30,22 +24,25 @@ read_wav :: proc(path: string, fs: u32, buffer_allocator := context.allocator) -
 	got_amt_samples := ma.decoder_get_length_in_pcm_frames(&decoder, &p_length)
 
 	if got_amt_samples != .SUCCESS {
-		panic("could not get amount of samples")
+		fmt.eprintln("Error reading from input file '%s'", path)
+        return nil, false
 	}
 
-	samples := make([]f32, p_length, buffer_allocator)
+	audio = make([]f32, p_length, buffer_allocator)
 	frames_read: u64
 
-	samples_read := ma.decoder_read_pcm_frames(&decoder, &samples[0], p_length, &frames_read)
+	samples_read := ma.decoder_read_pcm_frames(&decoder, &audio[0], p_length, &frames_read)
 
 	if samples_read != .SUCCESS {
-		panic("failed to read samlpes")
+		fmt.eprintln("Failed to read from input file '%s'", path)
+        return nil, false
 	}
 
-	return samples
+	return audio, true
 }
 
-write_wav :: proc(path: string, samples: []f32, sample_rate: u32) {
+@(require_results)
+write_wav :: proc(path: string, samples: []f32, sample_rate: u32) -> (ok: bool) {
 	cpath := strings.clone_to_cstring(path)
     defer delete(cpath)
 
@@ -55,7 +52,8 @@ write_wav :: proc(path: string, samples: []f32, sample_rate: u32) {
 	file_opened := ma.encoder_init_file(cpath, &config, &encoder)
 
 	if file_opened != .SUCCESS {
-		panic("failed to open output file")
+		fmt.eprintln("failed to open output file '%s'", path)
+        return false
 	}
 
 	defer ma.encoder_uninit(&encoder)
@@ -70,6 +68,9 @@ write_wav :: proc(path: string, samples: []f32, sample_rate: u32) {
 	)
 
 	if data_writen != .SUCCESS {
-		panic("failed to write samples")
+		fmt.eprintln("failed to write to output file '%s'", path)
+        return false
 	}
+
+    return true
 }

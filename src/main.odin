@@ -2,12 +2,12 @@ package src
 
 import "core:os"
 import "core:fmt"
-import "core:time"
 import "core:math"
 import "core:mem"
+import "core:slice"
 import vmem "core:mem/virtual"
 
-Component_Type :: enum {
+Component_Type :: enum u8 {
     Delay,
     Delay_Bank,
     Scalar_Gain,
@@ -66,22 +66,21 @@ Householder :: struct {
     scale:        f64,
 }
 
-make_components :: proc(config: Reverb_Config, allocator := context.allocator) -> (comps: [dynamic]^Component) {
+make_components :: proc(config: Reverb_Config, list: []Config, allocator := context.allocator) -> (comps: [dynamic]^Component) {
     total_len := make([]int, config.channels, context.allocator)
     defer delete(total_len)
-    for c, i in config.components {
+    for c, i in list {
         if c.type != .Delay_Bank do continue
-        for len, i in c.lengths {
-            total_len[i] += len
+        for length, i in c.lengths {
+            total_len[i] += length
         }
     }
 
-    fmt.println(total_len)
-
     comps = make([dynamic]^Component, allocator)
-    for component in config.components {
+    for component in list {
         switch component.type {
         case .Delay_Bank:
+            size := size_of(Bank(Delay_Line)) + size_of(Delay_Line) * config.channels
             bank := new(Bank(Delay_Line), allocator)
             bank.filters = make([]Delay_Line, config.channels, allocator)
             for length, i in component.lengths {
@@ -92,9 +91,9 @@ make_components :: proc(config: Reverb_Config, allocator := context.allocator) -
 
         case .Delay:
             bank := new(Delay, allocator)
-            assert(len(component.lengths) == 1)
-            bank.delay_line = Delay_Line{buf = make([]f64, component.delay, allocator)}
-
+            bank.delay_line = Delay_Line{
+                buf = make([]f64, int(config.fs * component.delay), allocator)
+            }
             bank.type = .Delay
             append(&comps, bank)
 
@@ -112,57 +111,51 @@ make_components :: proc(config: Reverb_Config, allocator := context.allocator) -
 
         case .Low_Pass_Filter_Bank:
             bank := new(Bank(Low_Pass_Filter), allocator)
-            bank.filters = make([]Low_Pass_Filter, config.channels, allocator)
-
-            for length, i in total_len {
-                damping := math.exp(-2.0 * math.PI * component.cutoff / config.fs)
-                bank.filters[i] = Low_Pass_Filter{0, damping, 1 - damping}
-            }
-
             bank.type = .Low_Pass_Filter_Bank
+
+            damping := math.exp(-2.0 * math.PI * component.cutoff / config.fs)
+            bank.filters = make([]Low_Pass_Filter, config.channels, allocator)
+            slice.fill(bank.filters, Low_Pass_Filter{0, damping, 1 - damping})
+
             append(&comps, bank)
 
         case .High_Pass_Filter_Bank:
             bank := new(Bank(High_Pass_Filter), allocator)
-            bank.filters = make([]High_Pass_Filter, config.channels, allocator)
-
-            for length, i in total_len {
-                alpha := 1 / (1 + (2 * math.PI * component.cutoff) / config.fs)
-                bank.filters[i] = High_Pass_Filter{alpha=alpha}
-            }
-
             bank.type = .High_Pass_Filter_Bank
+
+            bank.filters = make([]High_Pass_Filter, config.channels, allocator)
+            alpha := 1 / (1 + (2 * math.PI * component.cutoff) / config.fs)
+            slice.fill(bank.filters, High_Pass_Filter{alpha=alpha})
+
             append(&comps, bank)
 
         case .Biquad_Bank:
             bank := new(Bank(Biquad), allocator)
-            bank.filters = make([]Biquad, config.channels, allocator)
-
-            for length, i in total_len {
-                A := math.pow(10, component.peak_gain / 40)
-                omega := 2.0 * math.PI * component.fc / config.fs
-                sn := math.sin(omega)
-                cs := math.cos(omega)
-                alpha := sn * math.sinh(math.LN2 / 2 * component.Q * omega / sn)
-
-                b0 := 1.0 + (alpha * A)
-                b1 := -2.0 * cs
-                b2 := 1.0 - (alpha * A)
-
-                a0 := 1.0 + (alpha / A)
-                a1 := -2.0 * cs
-                a2 := 1.0 - (alpha / A)
-
-                bank.filters[i] = {
-                    a0 = b0 / a0,
-                    a1 = b1 / a0,
-                    a2 = b2 / a0,
-                    a3 = a1 / a0,
-                    a4 = a2 / a0,
-                }
-            }
-
             bank.type = .Biquad_Bank
+
+            A := math.pow(10, component.peak_gain / 40)
+            omega := 2.0 * math.PI * component.fc / config.fs
+            sn := math.sin(omega)
+            cs := math.cos(omega)
+            alpha := sn * math.sinh(math.LN2 / 2 * component.Q * omega / sn)
+
+            b0 := 1.0 + (alpha * A)
+            b1 := -2.0 * cs
+            b2 := 1.0 - (alpha * A)
+
+            a0 := 1.0 + (alpha / A)
+            a1 := -2.0 * cs
+            a2 := 1.0 - (alpha / A)
+
+            bank.filters = make([]Biquad, config.channels, allocator)
+            slice.fill(bank.filters, Biquad{
+                a0 = b0 / a0,
+                a1 = b1 / a0,
+                a2 = b2 / a0,
+                a3 = a1 / a0,
+                a4 = a2 / a0,
+            })
+
             append(&comps, bank)
 
         case .Householder:
@@ -244,68 +237,98 @@ process :: proc(component: ^Component, input, scratch: []f64) {
 }
 
 main :: proc() {
-    defer free_all(context.temp_allocator)
     config, ok := load_config("config.json", context.temp_allocator)
-    if ok := validate_reverb_config(config); !ok do return
+    if !ok || !validate_reverb_config(config) do return
 
     arena := vmem.Arena{}
     err := vmem.arena_init_growing(&arena)
     arena_allocator := vmem.arena_allocator(&arena)
     defer vmem.arena_destroy(&arena)
 
-    fmt.println(config)
-    components := make_components(config, arena_allocator)
-    index := config.primary_delay_bank_index
+    pre_feedback_network := make_components(config, config.pre_feedback_network, arena_allocator)
+    feedback_network := make_components(config, config.feedback_network, arena_allocator)
+    post_feedback_network := make_components(config, config.post_feedback_network, arena_allocator)
 
     // free the files for the config since they arent needed anymore
     free_all(context.temp_allocator)
 
-    audio := read_wav(fmt.tprintf("input sounds/%s.wav", os.args[1]), u32(config.fs), arena_allocator)
-
-    out := make([]f32, len(audio), arena_allocator)
     input := make([]f64, config.channels, arena_allocator)
     feedback := make([]f64, config.channels, arena_allocator)
     scratch := make([]f64, config.channels, arena_allocator)
 
-    now := time.now()
+    assert(feedback_network[0].type == .Delay_Bank)
+    main_bank := cast(^Bank(Delay_Line))feedback_network[0]
 
-    core := cast(^Bank(Delay_Line))components[index]
-    for sample, i in audio {
-        for i in 0 ..< config.channels {
-            input[i] = f64(sample)
+    for filename in os.args[1:] {
+        relative_path := fmt.tprintf("input sounds/%s.wav", filename)
+        audio := read_wav(relative_path, u32(config.fs), context.temp_allocator) or_continue
+        out := make([]f32, len(audio), context.temp_allocator)
+        defer free_all(context.temp_allocator)
+
+        for sample, i in audio {
+            for i in 0 ..< config.channels {
+                input[i] = f64(sample)
+            }
+
+            for &component in pre_feedback_network {
+                process(component, input, scratch)
+            }
+
+            for &dline, i in main_bank.filters {
+                feedback[i] = read_delay_line(&dline)
+            }
+
+            for &component in feedback_network[1:] {
+                process(component, feedback, scratch)
+            }
+
+            for &dline, i in main_bank.filters {
+                write_delay_line(&dline, input[i] + feedback[i])
+            }
+
+            for &component in post_feedback_network {
+                process(component, feedback, scratch)
+            }
+
+            sum: f32 = 0
+            for s in feedback {
+                sum += f32(s)
+            }
+            out[i] = sum / f32(config.channels)
         }
 
-        for &component in components[:index] {
-            process(component, input, scratch)
-        }
+        write_wav(fmt.tprintf("output sounds/%s.wav", filename), out, u32(config.fs)) or_continue
+        fmt.println("wrote to 'output sound/%s.wav'", filename)
 
-        for &dline, i in core.filters {
-            feedback[i] = read_delay_line(&dline)
+        for component in feedback_network {
+            switch component.type {
+            case .Delay:
+                delay := cast(^Delay)component
+                slice.zero(delay.delay_line.buf)
+            case .Delay_Bank:
+                bank := cast(^Bank(Delay_Line))component
+                for dline in bank.filters {
+                    slice.zero(dline.buf)
+                }
+            case .Low_Pass_Filter_Bank:
+                bank := cast(^Bank(Low_Pass_Filter))component
+                for &filter in bank.filters {
+                    filter.store = 0
+                }
+            case .High_Pass_Filter_Bank:
+                bank := cast(^Bank(High_Pass_Filter))component
+                for &filter in bank.filters {
+                    filter.x_prev = 0
+                    filter.y_prev = 0
+                }
+            case .Biquad_Bank:
+                bank := cast(^Bank(Biquad))component
+                for &b in bank.filters {
+                    b.x1, b.x2, b.y1, b.y2 = 0, 0, 0, 0
+                }
+            case .Householder, .Scalar_Gain:
+                // nothing
+            }
         }
-
-        for &component in components[index+1:] {
-            process(component, feedback, scratch)
-        }
-
-        for &dline, i in core.filters {
-            write_delay_line(&dline, input[i] + feedback[i])
-        }
-
-        sum: f32 = 0
-        for s in feedback {
-            sum += f32(s)
-        }
-        out[i] = sum / f32(config.channels)
     }
-
-    total_time := time.duration_seconds(time.since(now))
-    fmt.printfln(
-        "The reverb took %f seconds to process, which is %f times faster than real time.",
-        total_time,
-         f64(len(audio) / int(config.fs)) / total_time
-    )
-
-    write_wav(fmt.tprintf("output sounds/%s.wav", os.args[1]), out, u32(config.fs))
 }
-
-// please work

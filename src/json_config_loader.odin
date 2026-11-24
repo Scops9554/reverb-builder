@@ -11,22 +11,21 @@ Config :: struct {
     lengths: []int,
 
     // for delay
-    delay: int,
+    delay: f64,
 
     // for low and high pass filters
     cutoff: f64,
 
     // for the biquad filters
-    peak_gain:   f64,
-    fc: f64,
-    Q:  f64,
+    peak_gain: f64,
+    fc:        f64,
+    Q:         f64,
 }
 
 Config_JSON :: struct {
-    is_primary_delay_bank: bool,
     type:      string,
     lengths:   []int,
-    delay:     int,
+    delay:     f64,
     cutoff:    f64,
     peak_gain: f64,
     fc:        f64,
@@ -37,15 +36,18 @@ Reverb_Config_JSON :: struct {
     fs:          f64,
     rt60:        f64,
     channels:    int,
-    components:  []Config_JSON,
+    pre_feedback_network:  []Config_JSON,
+    feedback_network:      []Config_JSON,
+    post_feedback_network: []Config_JSON,
 }
 
 Reverb_Config :: struct {
     fs:         f64,
     rt60:       f64,
     channels:   int,
-    components: []Config,
-    primary_delay_bank_index: int,
+    pre_feedback_network:  []Config,
+    feedback_network:      []Config,
+    post_feedback_network: []Config,
 }
 
 config_type_from_string :: proc(name: string) -> (kind: Component_Type, ok: bool) {
@@ -95,7 +97,7 @@ load_config :: proc(path: string, allocator := context.allocator) -> (config: Re
         fmt.eprintln("Config error: 'rt60' must be greater than zero")
         return
     }
-    if len(raw.components) == 0 {
+    if len(raw.feedback_network) == 0 {
         fmt.eprintln("Config error: 'components' must not be empty")
         return
     }
@@ -103,59 +105,65 @@ load_config :: proc(path: string, allocator := context.allocator) -> (config: Re
     config.fs = raw.fs
     config.rt60 = raw.rt60
     config.channels = raw.channels
-    config.components = make([]Config, len(raw.components), allocator)
-    config.primary_delay_bank_index = -1
+    config.pre_feedback_network = make([]Config, len(raw.pre_feedback_network), allocator)
+    config.feedback_network = make([]Config, len(raw.feedback_network), allocator)
+    config.post_feedback_network = make([]Config, len(raw.post_feedback_network), allocator)
 
-    for source, i in raw.components {
-        kind, type_ok := config_type_from_string(source.type)
-        if !type_ok {
-            fmt.eprintfln("Config error: components[%d] has unknown type '%s'", i, source.type)
-            return
-        }
-
-        if source.is_primary_delay_bank {
-            if config.primary_delay_bank_index != -1 {
-                fmt.eprintfln(
-                    "Config error: components [%d] and [%d] set as primary delay bank '%s'",
-                    config.primary_delay_bank_index, i
-                )
-                return
-            }
-            config.primary_delay_bank_index = i
-        }
-
-        config.components[i] = Config{
-            type      = kind,
-            lengths   = source.lengths,
-            delay     = source.delay,
-            cutoff    = source.cutoff,
-            peak_gain = source.peak_gain,
-            fc        = source.fc,
-            Q         = source.q,
-        }
+    for source, i in raw.pre_feedback_network {
+        transfer_config(&config.pre_feedback_network[i], source) or_return
     }
 
-    if config.primary_delay_bank_index == -1 {
-        fmt.eprintln("Config error: no primary delay bank is set by the config")
-        return
+    for source, i in raw.feedback_network {
+        transfer_config(&config.feedback_network[i], source) or_return
+    }
+
+    for source, i in raw.post_feedback_network {
+        transfer_config(&config.post_feedback_network[i], source) or_return
     }
 
     return config, true
 }
 
-validate_reverb_config :: proc(config: Reverb_Config) -> bool {
+@(require_results)
+transfer_config :: proc(config: ^Config, source: Config_JSON) -> (ok: bool) {
+    kind, type_ok := config_type_from_string(source.type)
+    if !type_ok {
+        fmt.eprintfln("later") // TODO: add an actual error message
+        return
+    }
+    config^ = Config{
+        type      = kind,
+        lengths   = source.lengths,
+        delay     = source.delay,
+        cutoff    = source.cutoff,
+        peak_gain = source.peak_gain,
+        fc        = source.fc,
+        Q         = source.q,
+    }
+    return true
+}
+
+validate_reverb_config :: proc(config: Reverb_Config) -> (ok := true) {
     if config.fs <= 0 {
         fmt.eprintln("Config error: sample rate must be greater than zero")
-        return false
+        ok = false
+    }
+    if config.feedback_network[0].type != .Delay_Bank {
+        fmt.eprintln("Config error: the first component of the feedback network has to be a Delay_Bank")
+        ok = false
     }
 
-    has_feedback_delay_bank := false
+    ok &= validate_component_list(config, config.pre_feedback_network)
+    ok &= validate_component_list(config, config.feedback_network)
+    ok &= validate_component_list(config, config.post_feedback_network)
 
-    for component, i in config.components {
+    return ok
+}
+
+validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (ok: bool) {
+    for component, i in list {
         switch component.type {
         case .Delay_Bank:
-            has_feedback_delay_bank = true
-
             if len(component.lengths) != config.channels {
                 fmt.eprintfln(
                     "Config error: components[%d] has %d delay lengths; expected %d (one per channel)",
@@ -206,11 +214,5 @@ validate_reverb_config :: proc(config: Reverb_Config) -> bool {
             // nothing
         }
     }
-
-    if !has_feedback_delay_bank {
-        fmt.eprintln("Config error: at least one Delay_Bank is required for the feedback loop")
-        return false
-    }
-
     return true
 }
