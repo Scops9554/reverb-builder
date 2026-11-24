@@ -89,16 +89,15 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
             bank := new(Bank(Delay_Line), allocator)
             bank.filters = make([]Delay_Line, config.channels, allocator)
             for length, i in component.lengths {
-                bank.filters[i] = Delay_Line{buf = make([]f64, length, allocator)}
+                bank.filters[i] = {buf = make([]f64, length, allocator)}
             }
             bank.type = .Delay_Bank
             append(&comps, bank)
 
         case .Delay:
             bank := new(Delay, allocator)
-            bank.delay_line = Delay_Line{
-                buf = make([]f64, int(config.fs * component.delay), allocator)
-            }
+            length := int(config.fs * component.delay)
+            bank.delay_line = {buf = make([]f64, length, allocator)}
             bank.type = .Delay
             append(&comps, bank)
 
@@ -118,10 +117,9 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
             bank := new(Bank(One_Pole_Filter), allocator)
             bank.type = .One_Pole_Filter
             bank.filters = make([]One_Pole_Filter, config.channels, allocator)
-
             switch component.op_type {
             case .Low_Pass:
-                damping := math.exp(-2.0 * math.PI * component.cutoff / config.fs)
+                damping := math.exp(-2 * math.PI * component.cutoff / config.fs)
                 slice.fill(bank.filters, {.Low_Pass, 0, damping, 1 - damping})
             case .High_Pass:
                 alpha := 1 / (1 + (2 * math.PI * component.cutoff) / config.fs)
@@ -135,7 +133,7 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
 
             // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
             A := math.pow(10, component.peak_gain / 40)
-            omega := 2.0 * math.PI * component.fc / config.fs
+            omega := 2 * math.PI * component.fc / config.fs
             sn := math.sin(omega)
             cs := math.cos(omega)
             alpha := sn * math.sinh(math.LN2 / 2 * component.q * omega / sn)
@@ -167,7 +165,8 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
                 a2 = 1 - (alpha /A)
             }
 
-            slice.fill(bank.filters, Biquad{
+            bank.filters = make([]Biquad, config.channels, allocator)
+            slice.fill(bank.filters, {
                 a0 = b0 / a0,
                 a1 = b1 / a0,
                 a2 = b2 / a0,
@@ -265,12 +264,19 @@ process :: proc(component: ^Component, input, scratch: []f64) {
     case .Hadamard:
         n := len(input)
         for h := 1; h < n; h *= 2 {
-            for s := 0; s < n; s += h * 2 {
-                for j := 0; j < s; j += s + h {
-                    u, v := input[j], input[j + h]
-                    input[j], input[j + h] = u + v, u - v
+            for s := 0; s < n; s += 2 * h {
+                for j in s ..< s+h {
+                    u := input[j]
+                    v := input[j + h]
+                    input[j] = u + v
+                    input[j + h] = u - v
                 }
             }
+        }
+
+        scale := math.sqrt_f64(1.0 / f64(len(input)))
+        for i in 0 ..< len(input) {
+            input[i] *= scale
         }
     }
 }
@@ -319,6 +325,8 @@ main :: proc() {
         out := make([]f32, len(audio), context.temp_allocator)
         defer free_all(context.temp_allocator)
 
+        when ODIN_DEBUG do start := time.now()
+
         for sample, i in audio {
             for i in 0 ..< config.channels {
                 input[i] = f64(sample)
@@ -349,6 +357,14 @@ main :: proc() {
                 sum += f32(s)
             }
             out[i] = sum / f32(config.channels)
+        }
+
+        when ODIN_DEBUG {
+            total_time := time.duration_seconds(time.since(start))
+            fmt.printfln(
+                "Total: %f, %fx faster than real time.",
+                total_time, f64(len(audio)) / (config.fs * total_time)
+            )
         }
 
         output_filepath := fmt.tprintf("output sounds/%s/%s.wav", os.args[1], filename)

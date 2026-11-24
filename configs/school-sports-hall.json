@@ -14,7 +14,7 @@
             ]
         },
         {
-            "type": "Hadamard"
+            "type": "Householder"
         },
         {
             "type": "Delay_Bank",
@@ -26,7 +26,7 @@
             ]
         },
         {
-            "type": "Hadamard"
+            "type": "Householder"
         },
         {
             "type": "Delay_Bank",
@@ -38,7 +38,7 @@
             ]
         },
         {
-            "type": "Hadamard"
+            "type": "Householder"
         },
         {
             "type": "One_Pole_Filter",
