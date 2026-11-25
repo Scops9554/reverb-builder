@@ -9,7 +9,7 @@ import "core:time"
 import vmem "core:mem/virtual"
 
 Component :: struct {
-    type: enum {
+    type: enum u8 {
         Delay,
         Delay_Bank,
         Gain,
@@ -20,7 +20,7 @@ Component :: struct {
         Hadamard,
     },
     value: struct #raw_union {
-        delay_line:  Delay_Line,
+        delay:       Delay_Line,
         delay_bank:  []Delay_Line,
         gain:        []f64,
         high_pass:   []High_Pass,
@@ -51,9 +51,7 @@ Low_Pass :: struct{
 }
 
 High_Pass :: struct {
-    y_prev: f64,
-    x_prev: f64,
-    alpha:  f64,
+    y, x, a:  f64,
 }
 
 // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
@@ -65,8 +63,8 @@ Biquad :: struct {
 make_components :: proc(config: Reverb_Config, list: []Config, allocator := context.allocator) -> (comps: [dynamic]Component) {
     total_len := make([]int, config.channels, context.allocator)
     defer delete(total_len)
-    for c, i in list {
-        bank := c.params.(Delay_Bank_Params) or_continue
+    for comp in list {
+        bank := comp.params.(Delay_Bank_Lens) or_continue
         for length, i in bank.lengths {
             total_len[i] += length
         }
@@ -76,13 +74,13 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
     for component in list {
         switch component.type {
         case .Delay:
-            length := int(config.fs * component.params.(Delay_Line_Length).delay)
-            delay := Delay_Line{buf=make([]f64, length, allocator)}
-            append(&comps, {.Delay, {delay_line=delay}})
+            length := int(config.fs * component.params.(Delay_Line_Len).delay)
+            delay_line := Delay_Line{buf=make([]f64, length, allocator)}
+            append(&comps, {.Delay, {delay=delay_line}})
 
         case .Delay_Bank:
             bank := make([]Delay_Line, config.channels, allocator)
-            params := component.params.(Delay_Bank_Params)
+            params := component.params.(Delay_Bank_Lens)
             for length, i in params.lengths {
                 bank[i] = {buf = make([]f64, length, allocator)}
             }
@@ -107,7 +105,7 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
             case .High_Pass:
                 filters := make([]High_Pass, config.channels, allocator)
                 alpha := 1 / (1 + (2 * math.PI * params.cutoff) / config.fs)
-                slice.fill(filters, {0, 0, alpha})
+                slice.fill(filters, {a=alpha})
                 append(&comps, {.High_Pass, {high_pass=filters}})
             }
 
@@ -172,7 +170,7 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
 process :: proc(comp: ^Component, input, scratch: []f64) {
     switch comp.type {
     case .Delay:
-        delay := comp.value.delay_line
+        delay := comp.value.delay
         temp := read_delay_line(&delay)
         sum: f64
         for chan in input do sum += chan
@@ -201,11 +199,10 @@ process :: proc(comp: ^Component, input, scratch: []f64) {
 
     case .High_Pass:
         filters := comp.value.high_pass
-        for &filter, i in filters {
-            filter.y_prev = filter.alpha *
-                (filter.y_prev + input[i] - filter.x_prev)
-            filter.x_prev = input[i]
-            input[i] = filter.y_prev
+        for &f, i in filters {
+            f.y = f.a * (f.y + input[i] - f.x)
+            f.x = input[i]
+            input[i] = f.y
         }
 
     // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
@@ -296,6 +293,8 @@ main :: proc() {
     assert(feedback_network[0].type == .Delay_Bank)
     main_bank := feedback_network[0].value.delay_bank
 
+    when ODIN_DEBUG do total: f64 = 0
+
     for filename in os.args[2:] {
         relative_path := fmt.tprintf("input sounds/%s.wav", filename)
         audio := read_wav(relative_path, u32(config.fs), context.temp_allocator) or_continue
@@ -337,21 +336,26 @@ main :: proc() {
         }
 
         when ODIN_DEBUG {
-            total_time := time.duration_seconds(time.since(start))
-            fmt.printfln(
-                "Total: %f, %fx faster than real time.",
-                total_time, f64(len(audio)) / (config.fs * total_time)
-            )
+            T := time.duration_seconds(time.since(start))
+            total += T
         }
 
         output_filepath := fmt.tprintf("output sounds/%s/%s.wav", os.args[1], filename)
         write_wav(output_filepath, out, u32(config.fs)) or_continue
-        fmt.printfln("wrote to 'output sound/%s/%s.wav'", os.args[1], filename)
+
+        when ODIN_DEBUG {
+            fmt.printfln(
+                "Total: %f, %fx faster than real time.",
+                T, f64(len(audio)) / (config.fs * T)
+            )
+        } else {
+            fmt.printfln("wrote to 'output sound/%s/%s.wav'", os.args[1], filename)
+        }
 
         for comp in feedback_network {
             switch comp.type {
             case .Delay:
-                slice.zero(comp.value.delay_line.buf)
+                slice.zero(comp.value.delay.buf)
             case .Delay_Bank:
                 for dline in comp.value.delay_bank {
                     slice.zero(dline.buf)
@@ -362,8 +366,8 @@ main :: proc() {
                 }
             case .High_Pass:
                 for &filter in comp.value.high_pass {
-                    filter.x_prev = 0
-                    filter.y_prev = 0
+                    filter.x = 0
+                    filter.y = 0
                 }
             case .Biquad:
                 for &b in comp.value.biquad {
@@ -376,4 +380,6 @@ main :: proc() {
             }
         }
     }
+
+    when ODIN_DEBUG do fmt.println(total / f64(len(os.args) - 2))
 }

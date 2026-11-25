@@ -15,18 +15,18 @@ Config :: struct {
         Hadamard,
     },
     params: union {
-        Delay_Line_Length,
-        Delay_Bank_Params,
+        Delay_Line_Len,
+        Delay_Bank_Lens,
         One_Pole_Params,
         Biquad_Params,
     }
 }
 
-Delay_Line_Length :: struct {
+Delay_Line_Len :: struct {
     delay: f64,
 }
 
-Delay_Bank_Params :: struct {
+Delay_Bank_Lens :: struct {
     lengths: []int,
 }
 
@@ -105,56 +105,56 @@ validate_reverb_config :: proc(config: Reverb_Config) -> (ok: bool) {
 }
 
 validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (n_errs: int) {
-    comps: for component, i in list {
-        switch component.type {
+    comps: for comp, i in list {
+        switch comp.type {
         case .Delay:
-            params, ok := component.params.(Delay_Bank_Params)
+            params, ok := comp.params.(Delay_Bank_Lens)
             if !ok {
                 continue comps
                 // something
             }
             if len(params.lengths) != config.channels {
                 fmt.eprintfln(
-                    "Config error: components[%d] has %d delay params; expected %d (one per channel)",
-                    i, len(params.lengths), config.channels,
+                    "Config error: component [%d] has %d delay params; expected %d (one per channel)",
+                    i+1, len(params.lengths), config.channels,
                 )
                 n_errs += 1
             }
             for length in params.lengths {
                 if length <= 0 {
-                    fmt.eprintfln("Config error: components[%d] has a non-positive delay length", i)
+                    fmt.eprintfln("Config error: component [%d] has a non-positive delay length", i+1)
                     n_errs += 1
                 }
             }
 
         case .Delay_Bank:
-            param, ok := component.params.(Delay_Line_Length)
+            param, ok := comp.params.(Delay_Line_Len)
             if !ok {
                 continue comps
                 // something
             }
 
             if param.delay <= 0 {
-                fmt.eprintfln("Config error: components[%d] 'delay' must be greater than zero", i)
+                fmt.eprintfln("Config error: component [%d] 'delay' must be greater than zero", i+1)
                 n_errs += 1
             }
 
         case .One_Pole_Filter:
-            params, ok := component.params.(One_Pole_Params)
+            params, ok := comp.params.(One_Pole_Params)
             if !ok {
                 continue comps
                 // something
             }
             if params.cutoff <= 0 || params.cutoff >= config.fs * 0.5 {
                 fmt.eprintfln(
-                    "Config error: components[%d] cutoff must be between 0 and Nyquist (%g Hz)",
-                    i, 22050,
+                    "Config error: component [%d] cutoff must be between 0 and Nyquist (%g Hz)",
+                    i+1, 22050,
                 )
                 n_errs += 1
             }
 
         case .Biquad_Filter:
-            params, ok := component.params.(Biquad_Params)
+            params, ok := comp.params.(Biquad_Params)
             if !ok {
                 continue comps
                 // something
@@ -162,22 +162,25 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (n_err
             if params.fc <= 0 || params.fc >= config.fs * 0.5 {
                 fmt.eprintfln(
                     "Config error: paramss[%d] fc must be between 0 and Nyquist (%g Hz)",
-                    i, config.fs * 0.5,
+                    i+1, config.fs * 0.5,
                 )
                 n_errs += 1
             }
             if params.q <= 0 {
-                fmt.eprintfln("Config error: paramss[%d] Q must be greater than zero", i)
+                fmt.eprintfln("Config error: component [%d] Q must be greater than zero", i+1)
                 n_errs += 1
             }
             if params.peak_gain == 0 {
-                fmt.eprintfln("Config error: components[%d] peak_gain_rt60 must not be zero", i)
+                fmt.eprintfln("Config error: component [%d] peak_gain_rt60 must not be zero", i+1)
                 n_errs += 1
             }
 
         case .Gain,
             .Householder,
             .Hadamard:
+            if comp.params != nil {
+                fmt.eprintfln("Config error: component [%d] did not expect any parameters", i+1)
+            }
             // nothing
         }
     }
