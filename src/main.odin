@@ -5,8 +5,9 @@ import "core:fmt"
 import "core:math"
 import "core:mem"
 import "core:slice"
-import "core:time"
 import vmem "core:mem/virtual"
+
+WIDTH: f64
 
 Component :: struct {
     type: enum u8 {
@@ -20,12 +21,12 @@ Component :: struct {
         Hadamard,
     },
     value: struct #raw_union {
-        delay:       Delay_Line,
-        delay_bank:  []Delay_Line,
-        gain:        []f64,
-        high_pass:   []High_Pass,
-        low_pass:    []Low_Pass,
-        biquad:      []Biquad,
+        delay:      Delay_Line,
+        delay_bank: []Delay_Line,
+        gain:       []f64,
+        high_pass:  []High_Pass,
+        low_pass:   []Low_Pass,
+        biquad:     []Biquad,
     }
 }
 
@@ -171,11 +172,9 @@ process :: proc(comp: ^Component, input, scratch: []f64) {
     switch comp.type {
     case .Delay:
         delay := comp.value.delay
-        temp := read_delay_line(&delay)
-        sum: f64
-        for chan in input do sum += chan
-        write_delay_line(&delay, sum)
-        copy(input, []f64{temp / f64(len(input))})
+        out := read_delay_line(&delay)
+        write_delay_line(&delay, math.sum(input))
+        copy(input, []f64{out / WIDTH})
 
     case .Delay_Bank:
         bank := comp.value.delay_bank
@@ -226,13 +225,9 @@ process :: proc(comp: ^Component, input, scratch: []f64) {
         }
 
     case .Householder:
-        sum: f64 = 0
+        scaled_sum := math.sum(input) * -2 / WIDTH
         for i in 0 ..< len(input) {
-            sum += input[i]
-        }
-        sum *= -2 / f64(len(input))
-        for i in 0 ..< len(input) {
-            input[i] += sum
+            input[i] += scaled_sum
         }
 
     case .Hadamard:
@@ -248,7 +243,7 @@ process :: proc(comp: ^Component, input, scratch: []f64) {
             }
         }
 
-        scale := math.sqrt_f64(1.0 / f64(len(input)))
+        scale := math.sqrt_f64(1.0 / WIDTH)
         for i in 0 ..< len(input) {
             input[i] *= scale
         }
@@ -264,6 +259,8 @@ main :: proc() {
     config_filepath := fmt.tprintf("configs/%s.json", os.args[1])
     config, ok := load_config(config_filepath, context.temp_allocator)
     if !ok || !validate_reverb_config(config) do return
+
+    WIDTH = f64(config.channels)
 
     output_directory := fmt.tprintf("output sounds/%s", os.args[1])
     if !os.is_directory(output_directory) {
@@ -293,15 +290,11 @@ main :: proc() {
     assert(feedback_network[0].type == .Delay_Bank)
     main_bank := feedback_network[0].value.delay_bank
 
-    when ODIN_DEBUG do total: f64 = 0
-
     for filename in os.args[2:] {
         relative_path := fmt.tprintf("input sounds/%s.wav", filename)
         audio := read_wav(relative_path, u32(config.fs), context.temp_allocator) or_continue
         out := make([]f32, len(audio), context.temp_allocator)
         defer free_all(context.temp_allocator)
-
-        when ODIN_DEBUG do start := time.now()
 
         for sample, i in audio {
             for i in 0 ..< config.channels {
@@ -328,29 +321,12 @@ main :: proc() {
                 process(&component, feedback, scratch)
             }
 
-            sum: f32 = 0
-            for s in feedback {
-                sum += f32(s)
-            }
-            out[i] = sum / f32(config.channels)
-        }
-
-        when ODIN_DEBUG {
-            T := time.duration_seconds(time.since(start))
-            total += T
+            out[i] = f32(math.sum(feedback) / WIDTH)
         }
 
         output_filepath := fmt.tprintf("output sounds/%s/%s.wav", os.args[1], filename)
         write_wav(output_filepath, out, u32(config.fs)) or_continue
-
-        when ODIN_DEBUG {
-            fmt.printfln(
-                "Total: %f, %fx faster than real time.",
-                T, f64(len(audio)) / (config.fs * T)
-            )
-        } else {
-            fmt.printfln("wrote to 'output sound/%s/%s.wav'", os.args[1], filename)
-        }
+        fmt.printfln("wrote to 'output sound/%s/%s.wav'", os.args[1], filename)
 
         for comp in feedback_network {
             switch comp.type {
@@ -380,6 +356,4 @@ main :: proc() {
             }
         }
     }
-
-    when ODIN_DEBUG do fmt.println(total / f64(len(os.args) - 2))
 }

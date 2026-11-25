@@ -47,10 +47,12 @@
             "type": "Householder"
         },
         {
-            "type": "One_Pole_Filter",
+            "type": "Biquad_Filter",
             "params": {
                 "type": "Low_Pass",
-                "cutoff": 6850
+                "fc": 6850,
+                "peak_gain": -5.1,
+                "q": 2
             }
         },
         {
@@ -63,10 +65,12 @@
             }
         },
         {
-            "type": "One_Pole_Filter",
+            "type": "Biquad_Filter",
             "params": {
                 "type": "High_Pass",
-                "cutoff": 135
+                "fc": 135,
+                "peak_gain": -5.1,
+                "q": 2.25
             }
         },
         {

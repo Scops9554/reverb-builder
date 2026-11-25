@@ -31,7 +31,10 @@ Delay_Bank_Lens :: struct {
 }
 
 One_Pole_Params :: struct {
-    type:   enum{Low_Pass, High_Pass},
+    type:   enum u8 {
+        Low_Pass,
+        High_Pass,
+    },
     cutoff: f64,
 }
 
@@ -104,14 +107,31 @@ validate_reverb_config :: proc(config: Reverb_Config) -> (ok: bool) {
     return n_errs == 0
 }
 
+config_type_error :: proc(name: string, i: int) {
+    fmt.eprintfln("Invalid parameters for component [%d], type %s.", i+1, name)
+}
+
 validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (n_errs: int) {
     comps: for comp, i in list {
         switch comp.type {
         case .Delay:
+            param, ok := comp.params.(Delay_Line_Len)
+            if !ok {
+                n_errs += 1
+                config_type_error("Delay", i)
+                continue comps
+            }
+            if param.delay <= 0 {
+                fmt.eprintfln("Config error: component [%d] 'delay' must be greater than zero", i+1)
+                n_errs += 1
+            }
+
+        case .Delay_Bank:
             params, ok := comp.params.(Delay_Bank_Lens)
             if !ok {
+                n_errs += 1
+                config_type_error("Delay", i)
                 continue comps
-                // something
             }
             if len(params.lengths) != config.channels {
                 fmt.eprintfln(
@@ -127,23 +147,12 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (n_err
                 }
             }
 
-        case .Delay_Bank:
-            param, ok := comp.params.(Delay_Line_Len)
-            if !ok {
-                continue comps
-                // something
-            }
-
-            if param.delay <= 0 {
-                fmt.eprintfln("Config error: component [%d] 'delay' must be greater than zero", i+1)
-                n_errs += 1
-            }
-
         case .One_Pole_Filter:
             params, ok := comp.params.(One_Pole_Params)
             if !ok {
+                n_errs += 1
+                config_type_error("Delay", i)
                 continue comps
-                // something
             }
             if params.cutoff <= 0 || params.cutoff >= config.fs * 0.5 {
                 fmt.eprintfln(
@@ -156,8 +165,9 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (n_err
         case .Biquad_Filter:
             params, ok := comp.params.(Biquad_Params)
             if !ok {
+                n_errs += 1
+                config_type_error("Delay", i)
                 continue comps
-                // something
             }
             if params.fc <= 0 || params.fc >= config.fs * 0.5 {
                 fmt.eprintfln(
