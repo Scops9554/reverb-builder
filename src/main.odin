@@ -8,52 +8,52 @@ import "core:slice"
 import "core:time"
 import vmem "core:mem/virtual"
 
-Component_Type :: enum u8 {
-    Delay,
-    Delay_Bank,
-    Scalar_Gain,
-    One_Pole_Filter,
-    Biquad_Filter,
-    Householder,
-    Hadamard,
-}
-
 Component :: struct {
-    type: Component_Type,
-}
-
-Bank :: struct($T: typeid) {
-    using header: Component,
-    filters:     []T,
+    type: enum {
+        Delay,
+        Delay_Bank,
+        Gain,
+        Low_Pass,
+        High_Pass,
+        Biquad,
+        Householder,
+        Hadamard,
+    },
+    value: struct #raw_union {
+        delay_line:  Delay_Line,
+        delay_bank:  []Delay_Line,
+        gain:        []f64,
+        high_pass:   []High_Pass,
+        low_pass:    []Low_Pass,
+        biquad:      []Biquad,
+    }
 }
 
 Delay_Line :: struct {
     buf: []f64,
-    ptr: int,
+    idx: int,
 }
 read_delay_line :: proc(dline: ^Delay_Line) -> f64 {
-    return dline.buf[dline.ptr]
+    return dline.buf[dline.idx]
 }
 write_delay_line :: proc(dline: ^Delay_Line, input: f64) {
-    dline.buf[dline.ptr] = input
-    dline.ptr += 1
-    if dline.ptr == len(dline.buf) {
-        dline.ptr = 0
+    dline.buf[dline.idx] = input
+    dline.idx += 1
+    if dline.idx == len(dline.buf) {
+        dline.idx = 0
     }
 }
 
-Delay :: struct {
-    using header: Component,
-    delay_line:   Delay_Line,
+Low_Pass :: struct{
+    store: f64,
+    damp1: f64,
+    damp2: f64,
 }
 
-One_Pole_Filter :: struct {
-    kind: One_Pole_Type,
-    x0, x1, x2: f64,
-}
-One_Pole_Type :: enum {
-    High_Pass,
-    Low_Pass,
+High_Pass :: struct {
+    y_prev: f64,
+    x_prev: f64,
+    alpha:  f64,
 }
 
 // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
@@ -61,87 +61,69 @@ Biquad :: struct {
     a0, a1, a2, a3, a4: f64,
     x1, x2, y1, y2:     f64,
 }
-Biquad_Type :: enum {
-    Low_Pass,  /* low pass filter */
-    High_Pass, /* High pass filter */
-    Peaking,   /* Peaking band EQ filter */
-}
 
-Matrix :: struct {
-    using header: Component,
-}
-
-make_components :: proc(config: Reverb_Config, list: []Config, allocator := context.allocator) -> (comps: [dynamic]^Component) {
+make_components :: proc(config: Reverb_Config, list: []Config, allocator := context.allocator) -> (comps: [dynamic]Component) {
     total_len := make([]int, config.channels, context.allocator)
     defer delete(total_len)
     for c, i in list {
-        if c.type != .Delay_Bank do continue
-        for length, i in c.lengths {
+        bank := c.params.(Delay_Bank_Params) or_continue
+        for length, i in bank.lengths {
             total_len[i] += length
         }
     }
 
-    comps = make([dynamic]^Component, allocator)
+    comps = make([dynamic]Component, allocator)
     for component in list {
         switch component.type {
-        case .Delay_Bank:
-            size := size_of(Bank(Delay_Line)) + size_of(Delay_Line) * config.channels
-            bank := new(Bank(Delay_Line), allocator)
-            bank.filters = make([]Delay_Line, config.channels, allocator)
-            for length, i in component.lengths {
-                bank.filters[i] = {buf = make([]f64, length, allocator)}
-            }
-            bank.type = .Delay_Bank
-            append(&comps, bank)
-
         case .Delay:
-            bank := new(Delay, allocator)
-            length := int(config.fs * component.delay)
-            bank.delay_line = {buf = make([]f64, length, allocator)}
-            bank.type = .Delay
-            append(&comps, bank)
+            length := int(config.fs * component.params.(Delay_Line_Length).delay)
+            delay := Delay_Line{buf=make([]f64, length, allocator)}
+            append(&comps, {.Delay, {delay_line=delay}})
 
-        case .Scalar_Gain:
-            scalar_gain := new(Bank(f64), allocator)
-            scalar_gain.filters = make([]f64, config.channels, allocator)
-
-            for length, i in total_len {
-                scalar_gain.filters[i] =
-                    math.pow(10, (-60 * f64(length)) / (config.fs * config.rt60 * 20))
+        case .Delay_Bank:
+            bank := make([]Delay_Line, config.channels, allocator)
+            params := component.params.(Delay_Bank_Params)
+            for length, i in params.lengths {
+                bank[i] = {buf = make([]f64, length, allocator)}
             }
+            append(&comps, {.Delay_Bank, {delay_bank=bank}})
 
-            scalar_gain.type = .Scalar_Gain
-            append(&comps, scalar_gain)
+        case .Gain:
+            gain := make([]f64, config.channels, allocator)
+            for length, i in total_len {
+                gain[i] = math.pow(10, (-60 * f64(length)) / (config.fs * config.rt60 * 20))
+            }
+            append(&comps, {.Gain, {gain=gain}})
 
         case .One_Pole_Filter:
-            bank := new(Bank(One_Pole_Filter), allocator)
-            bank.type = .One_Pole_Filter
-            bank.filters = make([]One_Pole_Filter, config.channels, allocator)
-            switch component.op_type {
+            params := component.params.(One_Pole_Params)
+            switch params.type {
             case .Low_Pass:
-                damping := math.exp(-2 * math.PI * component.cutoff / config.fs)
-                slice.fill(bank.filters, {.Low_Pass, 0, damping, 1 - damping})
+                filters := make([]Low_Pass, config.channels, allocator)
+                damping := math.exp(-2 * math.PI * params.cutoff / config.fs)
+                slice.fill(filters, {0, damping, 1 - damping})
+                append(&comps, {.Low_Pass, {low_pass=filters}})
+
             case .High_Pass:
-                alpha := 1 / (1 + (2 * math.PI * component.cutoff) / config.fs)
-                slice.fill(bank.filters, {.High_Pass, 0, 0, alpha})
+                filters := make([]High_Pass, config.channels, allocator)
+                alpha := 1 / (1 + (2 * math.PI * params.cutoff) / config.fs)
+                slice.fill(filters, {0, 0, alpha})
+                append(&comps, {.High_Pass, {high_pass=filters}})
             }
-            append(&comps, bank)
 
         case .Biquad_Filter:
-            bank := new(Bank(Biquad), allocator)
-            bank.type = .Biquad_Filter
-
+            params := component.params.(Biquad_Params)
             // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
-            A := math.pow(10, component.peak_gain / 40)
-            omega := 2 * math.PI * component.fc / config.fs
+            A := math.pow(10, params.peak_gain / 40)
+            omega := 2 * math.PI * params.fc / config.fs
             sn := math.sin(omega)
             cs := math.cos(omega)
-            alpha := sn * math.sinh(math.LN2 / 2 * component.q * omega / sn)
+            alpha := sn * math.sinh(math.LN2 / 2 * params.q * omega / sn)
 
             b0, b1, b2: f64
             a0, a1, a2: f64
 
-            #partial switch component.bq_type {
+            #partial switch params.type {
             case .Low_Pass:
                 b0 = (1 - cs) /2
                 b1 = 1 - cs
@@ -165,8 +147,8 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
                 a2 = 1 - (alpha /A)
             }
 
-            bank.filters = make([]Biquad, config.channels, allocator)
-            slice.fill(bank.filters, {
+            filters := make([]Biquad, config.channels, allocator)
+            slice.fill(filters, {
                 a0 = b0 / a0,
                 a1 = b1 / a0,
                 a2 = b2 / a0,
@@ -174,66 +156,62 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
                 a4 = a2 / a0,
             })
 
-            append(&comps, bank)
+            append(&comps, {.Biquad, {biquad=filters}})
 
         case .Householder:
-            householder := new(Matrix, allocator)
-            householder.type = .Householder
-            append(&comps, householder)
+            append(&comps, {type=.Householder})
 
         case .Hadamard:
-            hadamard := new(Matrix, allocator)
-            hadamard.type = .Hadamard
-            append(&comps, hadamard)
+            append(&comps, {type=.Hadamard})
         }
     }
 
     return comps
 }
 
-process :: proc(component: ^Component, input, scratch: []f64) {
-    switch component.type {
+process :: proc(comp: ^Component, input, scratch: []f64) {
+    switch comp.type {
     case .Delay:
-        bank := cast(^Delay)component
-        temp := read_delay_line(&bank.delay_line)
+        delay := comp.value.delay_line
+        temp := read_delay_line(&delay)
         sum: f64
         for chan in input do sum += chan
-        write_delay_line(&bank.delay_line, sum)
+        write_delay_line(&delay, sum)
         copy(input, []f64{temp / f64(len(input))})
 
     case .Delay_Bank:
-        bank := cast(^Bank(Delay_Line))component
-        for &dline, i in bank.filters {
+        bank := comp.value.delay_bank
+        for &dline, i in bank {
             scratch[i] = read_delay_line(&dline)
             write_delay_line(&dline, input[i])
         }
         copy(input, scratch)
 
-    case .Scalar_Gain:
-        bank := cast(^Bank(f64))component
-        gains := cast(^Bank(f64))component
-        for g, i in gains.filters do input[i] *= g
+    case .Gain:
+        gains := comp.value.gain
+        for g, i in gains do input[i] *= g
 
-    case .One_Pole_Filter:
-        bank := cast(^Bank(One_Pole_Filter))component
-        switch bank.filters[0].kind {
-        case .Low_Pass:
-            for &filter, i in bank.filters {
-                filter.x0 = (input[i] * filter.x2) + (filter.x0 * filter.x1)
-                input[i] = filter.x0
-            }
-        case .High_Pass:
-            for &filter, i in bank.filters {
-                filter.x0 = filter.x2 * (filter.x0 + input[i] - filter.x1)
-                filter.x1 = input[i]
-                input[i] = filter.x0
-            }
+    case .Low_Pass:
+        filters := comp.value.low_pass
+        for &filter, i in filters {
+            filter.store = (input[i] * filter.damp2) +
+                (filter.store * filter.damp1)
+            input[i] = filter.store
+        }
+
+    case .High_Pass:
+        filters := comp.value.high_pass
+        for &filter, i in filters {
+            filter.y_prev = filter.alpha *
+                (filter.y_prev + input[i] - filter.x_prev)
+            filter.x_prev = input[i]
+            input[i] = filter.y_prev
         }
 
     // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
-    case .Biquad_Filter:
-        bank := cast(^Bank(Biquad))component
-        for &b, i in bank.filters {
+    case .Biquad:
+        filters := comp.value.biquad
+        for &b, i in filters {
             result :=
                 b.a0 * input[i] +
                 b.a1 * b.x1 +
@@ -251,7 +229,6 @@ process :: proc(component: ^Component, input, scratch: []f64) {
         }
 
     case .Householder:
-        matr := cast(^Matrix)component
         sum: f64 = 0
         for i in 0 ..< len(input) {
             sum += input[i]
@@ -317,7 +294,7 @@ main :: proc() {
     scratch := make([]f64, config.channels, arena_allocator)
 
     assert(feedback_network[0].type == .Delay_Bank)
-    main_bank := cast(^Bank(Delay_Line))feedback_network[0]
+    main_bank := feedback_network[0].value.delay_bank
 
     for filename in os.args[2:] {
         relative_path := fmt.tprintf("input sounds/%s.wav", filename)
@@ -333,23 +310,23 @@ main :: proc() {
             }
 
             for &component in pre_feedback_network {
-                process(component, input, scratch)
+                process(&component, input, scratch)
             }
 
-            for &dline, i in main_bank.filters {
+            for &dline, i in main_bank {
                 feedback[i] = read_delay_line(&dline)
             }
 
             for &component in feedback_network[1:] {
-                process(component, feedback, scratch)
+                process(&component, feedback, scratch)
             }
 
-            for &dline, i in main_bank.filters {
+            for &dline, i in main_bank {
                 write_delay_line(&dline, input[i] + feedback[i])
             }
 
             for &component in post_feedback_network {
-                process(component, feedback, scratch)
+                process(&component, feedback, scratch)
             }
 
             sum: f32 = 0
@@ -371,36 +348,30 @@ main :: proc() {
         write_wav(output_filepath, out, u32(config.fs)) or_continue
         fmt.printfln("wrote to 'output sound/%s/%s.wav'", os.args[1], filename)
 
-        for component in feedback_network {
-            switch component.type {
+        for comp in feedback_network {
+            switch comp.type {
             case .Delay:
-                delay := cast(^Delay)component
-                slice.zero(delay.delay_line.buf)
+                slice.zero(comp.value.delay_line.buf)
             case .Delay_Bank:
-                bank := cast(^Bank(Delay_Line))component
-                for dline in bank.filters {
+                for dline in comp.value.delay_bank {
                     slice.zero(dline.buf)
                 }
-            case .One_Pole_Filter:
-                bank := cast(^Bank(One_Pole_Filter))component
-                switch bank.filters[0].kind {
-                case .Low_Pass:
-                    for &filter in bank.filters {
-                        filter.x0 = 0
-                    }
-                case .High_Pass:
-                    for &filter in bank.filters {
-                        filter.x0, filter.x1 = 0, 0
-                    }
+            case .Low_Pass:
+                for &filter in comp.value.low_pass {
+                    filter.store = 0
                 }
-            case .Biquad_Filter:
-                bank := cast(^Bank(Biquad))component
-                for &b in bank.filters {
+            case .High_Pass:
+                for &filter in comp.value.high_pass {
+                    filter.x_prev = 0
+                    filter.y_prev = 0
+                }
+            case .Biquad:
+                for &b in comp.value.biquad {
                     b.x1, b.x2, b.y1, b.y2 = 0, 0, 0, 0
                 }
             case .Householder,
                 .Hadamard,
-                .Scalar_Gain:
+                .Gain:
                 // nothing
             }
         }
