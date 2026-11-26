@@ -82,15 +82,15 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
         case .Delay_Bank:
             bank := make([]Delay_Line, config.channels, allocator)
             params := component.params.(Delay_Bank_Lens)
-            for length, i in params.lengths {
-                bank[i] = {buf = make([]f64, length, allocator)}
+            for length, j in params.lengths {
+                bank[j] = {buf = make([]f64, length, allocator)}
             }
             comps[i] = {.Delay_Bank, {delay_bank=bank}}
 
         case .Gain:
             gains := make([]f64, config.channels, allocator)
-            for length, i in total_len {
-                gains[i] = math.pow(10, (-60 * f64(length)) / (config.fs * config.rt60 * 20))
+            for length, j in total_len {
+                gains[j] = math.pow(10, (-60 * f64(length)) / (config.fs * config.rt60 * 20))
             }
             comps[i] = {.Gain, {gain=gains}}
 
