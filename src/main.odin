@@ -20,7 +20,7 @@ Component :: struct {
         Householder,
         Hadamard,
     },
-    value: struct #raw_union {
+    using value: struct #raw_union {
         delay:      Delay_Line,
         delay_bank: []Delay_Line,
         gain:       []f64,
@@ -61,7 +61,7 @@ Biquad :: struct {
     x1, x2, y1, y2:     f64,
 }
 
-make_components :: proc(config: Reverb_Config, list: []Config, allocator := context.allocator) -> (comps: [dynamic]Component) {
+make_components :: proc(config: Reverb_Config, list: []Config, allocator := context.allocator) -> (comps: []Component) {
     total_len := make([]int, config.channels, context.allocator)
     defer delete(total_len)
     for comp in list {
@@ -71,13 +71,13 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
         }
     }
 
-    comps = make([dynamic]Component, allocator)
-    for component in list {
+    comps = make([]Component, len(list), allocator)
+    for &component, i in list {
         switch component.type {
         case .Delay:
             length := int(config.fs * component.params.(Delay_Line_Len).delay)
             delay_line := Delay_Line{buf=make([]f64, length, allocator)}
-            append(&comps, {.Delay, {delay=delay_line}})
+            comps[i] = {.Delay, {delay=delay_line}}
 
         case .Delay_Bank:
             bank := make([]Delay_Line, config.channels, allocator)
@@ -85,14 +85,14 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
             for length, i in params.lengths {
                 bank[i] = {buf = make([]f64, length, allocator)}
             }
-            append(&comps, {.Delay_Bank, {delay_bank=bank}})
+            comps[i] = {.Delay_Bank, {delay_bank=bank}}
 
         case .Gain:
-            gain := make([]f64, config.channels, allocator)
+            gains := make([]f64, config.channels, allocator)
             for length, i in total_len {
-                gain[i] = math.pow(10, (-60 * f64(length)) / (config.fs * config.rt60 * 20))
+                gains[i] = math.pow(10, (-60 * f64(length)) / (config.fs * config.rt60 * 20))
             }
-            append(&comps, {.Gain, {gain=gain}})
+            comps[i] = {.Gain, {gain=gains}}
 
         case .One_Pole_Filter:
             params := component.params.(One_Pole_Params)
@@ -101,28 +101,30 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
                 filters := make([]Low_Pass, config.channels, allocator)
                 damping := math.exp(-2 * math.PI * params.cutoff / config.fs)
                 slice.fill(filters, {0, damping, 1 - damping})
-                append(&comps, {.Low_Pass, {low_pass=filters}})
+                comps[i] = {.Low_Pass, {low_pass=filters}}
 
             case .High_Pass:
                 filters := make([]High_Pass, config.channels, allocator)
                 alpha := 1 / (1 + (2 * math.PI * params.cutoff) / config.fs)
                 slice.fill(filters, {a=alpha})
-                append(&comps, {.High_Pass, {high_pass=filters}})
+                comps[i] = {.High_Pass, {high_pass=filters}}
             }
 
         case .Biquad_Filter:
             params := component.params.(Biquad_Params)
             // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
+            /* setup variables */
             A := math.pow(10, params.peak_gain / 40)
             omega := 2 * math.PI * params.fc / config.fs
             sn := math.sin(omega)
             cs := math.cos(omega)
             alpha := sn * math.sinh(math.LN2 / 2 * params.q * omega / sn)
+            beta := math.sqrt(A + A)
 
             b0, b1, b2: f64
             a0, a1, a2: f64
 
-            #partial switch params.type {
+            switch params.type {
             case .Low_Pass:
                 b0 = (1 - cs) /2
                 b1 = 1 - cs
@@ -144,10 +146,32 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
                 a0 = 1 + (alpha /A)
                 a1 = -2 * cs
                 a2 = 1 - (alpha /A)
+            case .Notch:
+                b0 = 1
+                b1 = -2 * cs
+                b2 = 1
+                a0 = 1 + alpha
+                a1 = -2 * cs
+                a2 = 1 - alpha
+            case .Low_Shelf:
+                b0 = A * ((A + 1) - (A - 1) * cs + beta * sn)
+                b1 = 2 * A * ((A - 1) - (A + 1) * cs)
+                b2 = A * ((A + 1) - (A - 1) * cs - beta * sn)
+                a0 = (A + 1) + (A - 1) * cs + beta * sn
+                a1 = -2 * ((A - 1) + (A + 1) * cs)
+                a2 = (A + 1) + (A - 1) * cs - beta * sn
+            case .High_Shelf:
+                b0 = A * ((A + 1) + (A - 1) * cs + beta * sn)
+                b1 = -2 * A * ((A - 1) + (A + 1) * cs)
+                b2 = A * ((A + 1) + (A - 1) * cs - beta * sn)
+                a0 = (A + 1) - (A - 1) * cs + beta * sn
+                a1 = 2 * ((A - 1) - (A + 1) * cs)
+                a2 = (A + 1) - (A - 1) * cs - beta * sn
             }
 
-            filters := make([]Biquad, config.channels, allocator)
-            slice.fill(filters, {
+            biquads := make([]Biquad, config.channels, allocator)
+            slice.fill(biquads, {
+                /* precompute the coefficients */
                 a0 = b0 / a0,
                 a1 = b1 / a0,
                 a2 = b2 / a0,
@@ -155,50 +179,44 @@ make_components :: proc(config: Reverb_Config, list: []Config, allocator := cont
                 a4 = a2 / a0,
             })
 
-            append(&comps, {.Biquad, {biquad=filters}})
+            comps[i] = {.Biquad, {biquad=biquads}}
 
         case .Householder:
-            append(&comps, {type=.Householder})
+            comps[i] = {type=.Householder}
 
         case .Hadamard:
-            append(&comps, {type=.Hadamard})
+            comps[i] = {type=.Hadamard}
         }
     }
 
     return comps
 }
 
-process :: proc(comp: ^Component, input, scratch: []f64) {
+process :: proc(comp: ^Component, input: []f64) {
     switch comp.type {
     case .Delay:
-        delay := comp.value.delay
-        out := read_delay_line(&delay)
-        write_delay_line(&delay, math.sum(input))
+        out := read_delay_line(&comp.delay)
+        write_delay_line(&comp.delay, math.sum(input))
         copy(input, []f64{out / WIDTH})
 
     case .Delay_Bank:
-        bank := comp.value.delay_bank
-        for &dline, i in bank {
-            scratch[i] = read_delay_line(&dline)
+        for &dline, i in comp.delay_bank {
+            out := read_delay_line(&dline)
             write_delay_line(&dline, input[i])
+            input[i] = out
         }
-        copy(input, scratch)
 
     case .Gain:
-        gains := comp.value.gain
-        for g, i in gains do input[i] *= g
+        for g, i in comp.gain do input[i] *= g
 
     case .Low_Pass:
-        filters := comp.value.low_pass
-        for &filter, i in filters {
-            filter.store = (input[i] * filter.damp2) +
-                (filter.store * filter.damp1)
-            input[i] = filter.store
+        for &f, i in comp.low_pass {
+            f.store = (input[i] * f.damp2) + (f.store * f.damp1)
+            input[i] = f.store
         }
 
     case .High_Pass:
-        filters := comp.value.high_pass
-        for &f, i in filters {
+        for &f, i in comp.high_pass {
             f.y = f.a * (f.y + input[i] - f.x)
             f.x = input[i]
             input[i] = f.y
@@ -206,8 +224,7 @@ process :: proc(comp: ^Component, input, scratch: []f64) {
 
     // thanks! https://www.musicdsp.org/en/latest/Filters/64-biquad-c-code.html
     case .Biquad:
-        filters := comp.value.biquad
-        for &b, i in filters {
+        for &b, i in comp.biquad {
             result :=
                 b.a0 * input[i] +
                 b.a1 * b.x1 +
@@ -285,7 +302,6 @@ main :: proc() {
 
     input := make([]f64, config.channels, arena_allocator)
     feedback := make([]f64, config.channels, arena_allocator)
-    scratch := make([]f64, config.channels, arena_allocator)
 
     assert(feedback_network[0].type == .Delay_Bank)
     main_bank := feedback_network[0].value.delay_bank
@@ -302,7 +318,7 @@ main :: proc() {
             }
 
             for &component in pre_feedback_network {
-                process(&component, input, scratch)
+                process(&component, input)
             }
 
             for &dline, i in main_bank {
@@ -310,7 +326,7 @@ main :: proc() {
             }
 
             for &component in feedback_network[1:] {
-                process(&component, feedback, scratch)
+                process(&component, feedback)
             }
 
             for &dline, i in main_bank {
@@ -318,7 +334,7 @@ main :: proc() {
             }
 
             for &component in post_feedback_network {
-                process(&component, feedback, scratch)
+                process(&component, feedback)
             }
 
             out[i] = f32(math.sum(feedback) / WIDTH)
@@ -331,22 +347,22 @@ main :: proc() {
         for comp in feedback_network {
             switch comp.type {
             case .Delay:
-                slice.zero(comp.value.delay.buf)
+                slice.zero(comp.delay.buf)
             case .Delay_Bank:
-                for dline in comp.value.delay_bank {
+                for dline in comp.delay_bank {
                     slice.zero(dline.buf)
                 }
             case .Low_Pass:
-                for &filter in comp.value.low_pass {
+                for &filter in comp.low_pass {
                     filter.store = 0
                 }
             case .High_Pass:
-                for &filter in comp.value.high_pass {
+                for &filter in comp.high_pass {
                     filter.x = 0
                     filter.y = 0
                 }
             case .Biquad:
-                for &b in comp.value.biquad {
+                for &b in comp.biquad {
                     b.x1, b.x2, b.y1, b.y2 = 0, 0, 0, 0
                 }
             case .Householder,

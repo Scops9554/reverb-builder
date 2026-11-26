@@ -43,6 +43,9 @@ Biquad_Params :: struct {
         Low_Pass,
         High_Pass,
         Peaking,
+        Notch,
+        Low_Shelf,
+        High_Shelf,
     },
     peak_gain: f64,
     fc: f64,
@@ -180,7 +183,9 @@ validate_component_list :: proc(config: Reverb_Config, list: []Config) -> (n_err
                 fmt.eprintfln("Config error: component [%d] Q must be greater than zero", i+1)
                 n_errs += 1
             }
-            if params.peak_gain == 0 {
+            if params.peak_gain == 0 &&
+                params.type != .High_Pass &&
+                params.type != .Low_Pass {
                 fmt.eprintfln("Config error: component [%d] peak_gain_rt60 must not be zero", i+1)
                 n_errs += 1
             }
